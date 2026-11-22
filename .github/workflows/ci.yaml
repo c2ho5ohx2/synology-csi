@@ -6,14 +6,22 @@ on:
       - 'go.*'
       - '**/*.go'
       - 'Dockerfile'
+      - 'Dockerfile.community*'
+      - 'LICENSE'
       - 'Makefile'
+      - 'deploy/helm/**'
+      - 'README.md'
   pull_request:
     paths:
       - '.github/workflows/ci.yaml'
       - 'go.*'
       - '**/*.go'
       - 'Dockerfile'
+      - 'Dockerfile.community*'
+      - 'LICENSE'
       - 'Makefile'
+      - 'deploy/helm/**'
+      - 'README.md'
 
 jobs:
   build:
@@ -24,12 +32,61 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.1
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v6.1.0
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
         with:
           go-version-file: 'go.mod'
 
+      - name: Set up Helm
+        uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.22.1
+
       - name: Build binary
         run: make build
+
+      - name: Run unit tests and Helm rendering checks
+        # TestSanity requires a live DSM and Kubernetes environment.
+        run: go test -count=1 -skip '^TestSanity$' ./...
+
+      - name: Run Go vet
+        run: go vet ./...
+
+      - name: Lint Helm chart
+        run: helm lint deploy/helm
+
+  community-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    env:
+      COMMUNITY_IMAGE_TAG: synology-csi:community-ci
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build community image
+        run: make docker-build-community
+
+      - name: Check community image
+        run: |
+          docker run --rm --network none "$COMMUNITY_IMAGE_TAG" --help \
+            | grep -F -- '--nfs-client-address-source'
+          docker run --rm --network none --entrypoint /bin/sh "$COMMUNITY_IMAGE_TAG" -ec '
+            test "$(id -u)" = 1000
+            test -x /usr/sbin/chroot
+            test -r /licenses/LICENSE
+            for tool in bash blkid blockdev findmnt fsck ip lsblk mkfs.ext4 mkfs.xfs mount mount.cifs mount.nfs mount.nfs4 nvme resize2fs umount xfs_growfs; do
+              command -v "$tool"
+            done
+          '
